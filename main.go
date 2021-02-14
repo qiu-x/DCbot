@@ -10,16 +10,24 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"path/filepath"
+	"math/rand"
+	"errors"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/jonas747/dca"
 )
 
 var Token string
+var DirLocaton string
+var isPlaying bool
+var done chan error
 
 func init() {
 	flag.StringVar(&Token, "t", "", "Bot Token")
+	flag.StringVar(&DirLocaton, "d", "", "Path to Music (Directory)")
 	flag.Parse()
+	rand.Seed(time.Now().UnixNano())
 }
 
 func main() {
@@ -33,8 +41,7 @@ func main() {
 
 	// In this example, we only care about receiving message events.
 	dg.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentsGuildVoiceStates
-
-	if dg.Open() != nil {
+	if err = dg.Open(); err != nil {
 		fmt.Println("error opening connection,", err)
 		return
 	}
@@ -68,8 +75,8 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		// Look for the message sender in that guild's current voice states.
 		for _, vs := range g.VoiceStates {
 			if vs.UserID == m.Author.ID {
-				err = playSound(s, "/home/qiu/music/k.mp3", g.ID, vs.ChannelID)
 				s.ChannelMessageSend(m.ChannelID, "Plaing!")
+				err = playSound(s, DirLocaton, g.ID, vs.ChannelID)
 				if err != nil {
 					fmt.Println("Error playing sound:", err)
 				}
@@ -77,38 +84,66 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			}
 		}
 	}
+	if strings.HasPrefix(m.Content, "!skip") {
+		if isPlaying == false {
+			s.ChannelMessageSend(m.ChannelID, "There is nothing to skip. Noob...")
+			return
+		}
+		s.ChannelMessageSend(m.ChannelID, "Skipping...")
+		done <- errors.New("math: square root of negative number")
+
+		
+	}
 }
 
 func playSound(s *discordgo.Session, path, guildID, channelID string) (err error) {
-
-	encodeSession, err := dca.EncodeFile(path, dca.StdEncodeOptions)
-	if err != nil {
-		    fmt.Println("file not found")
-	}
-	defer encodeSession.Cleanup()
-
+	isPlaying = true
 	vc, err := s.ChannelVoiceJoin(guildID, channelID, false, true)
+	var music []string
+	err = filepath.Walk(path,
+		func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+		    return err
+		}
+		if info.IsDir() == false {
+			music = append(music, path)
+		}
+		return nil
+	})
 	if err != nil {
-		return err
+	    fmt.Println(err)
 	}
-	time.Sleep(30 * time.Millisecond)
-	vc.Speaking(true)
-
-	done := make(chan error)    
-	dca.NewStream(encodeSession, vc, done)
-	erro := <- done
-	if erro != nil && erro != io.EOF {
-		s.ChannelMessageSend(channelID, "shit happens")
+	for i := range music {
+		j := rand.Intn(i + 1)
+		music[i], music[j] = music[j], music[i]
 	}
 
-	// // Send the buffer data.
-	// for _, buff := range buffer {
-		// vc.OpusSend <- buff
-	// }
+	for _, music_path := range music {
+		encodeSession, err := dca.EncodeFile(music_path, dca.StdEncodeOptions)
+		if err != nil {
+			    fmt.Println("file not found")
+		}
+		defer encodeSession.Cleanup()
+
+		if err != nil {
+			return err
+		}
+		time.Sleep(30 * time.Millisecond)
+		vc.Speaking(true)
+
+		done = make(chan error)    
+		streamSes := dca.NewStream(encodeSession, vc, done)
+		erro := <- done
+		if erro != nil && erro != io.EOF {
+			streamSes.SetPaused(true)
+			s.ChannelMessageSend(channelID, "shit happens")
+		}
+	}
 
 	vc.Speaking(false)
 	time.Sleep(250 * time.Millisecond)
 	vc.Disconnect()
+	isPlaying = false
 
 	return nil
 }
