@@ -1,7 +1,6 @@
 package main
 
 import (
-	// "encoding/binary"
 	"flag"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 	"time"
 	"path/filepath"
 	"math/rand"
-	"errors"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/jonas747/dca"
@@ -20,7 +18,7 @@ import (
 
 var Token string
 var DirLocaton string
-var isPlaying bool
+var isPlaying bool = false
 var done chan error
 
 func init() {
@@ -36,10 +34,8 @@ func main() {
 		fmt.Println("error creating Discord session,", err)
 		return
 	}
-
+	dg.LogLevel = discordgo.LogWarning
 	dg.AddHandler(messageCreate)
-
-	// In this example, we only care about receiving message events.
 	dg.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildMessages | discordgo.IntentsGuildVoiceStates
 	if err = dg.Open(); err != nil {
 		fmt.Println("error opening connection,", err)
@@ -57,7 +53,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author.ID == s.State.User.ID {
 		return
 	}
-	if strings.HasPrefix(m.Content, "!play") {
+	if strings.HasPrefix(m.Content, "!play") && isPlaying == false{
 		// Find the channel that the message came from.
 		c, err := s.State.Channel(m.ChannelID)
 		if err != nil {
@@ -75,7 +71,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		// Look for the message sender in that guild's current voice states.
 		for _, vs := range g.VoiceStates {
 			if vs.UserID == m.Author.ID {
-				s.ChannelMessageSend(m.ChannelID, "Plaing!")
+				s.ChannelMessageSend(m.ChannelID, "Playing!")
 				err = playSound(s, DirLocaton, g.ID, vs.ChannelID)
 				if err != nil {
 					fmt.Println("Error playing sound:", err)
@@ -90,7 +86,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			return
 		}
 		s.ChannelMessageSend(m.ChannelID, "Skipping...")
-		done <- errors.New("math: square root of negative number")
+		done <- io.EOF
 
 		
 	}
