@@ -144,7 +144,6 @@ func (m *MusicPlayer) run() (err error) {
 		case setState := <-m.channels.setState:
 			oldIsPlaying = isPlaying
 			isPlaying = setState
-			fmt.Println(isPlaying)
 			if len(m.queue) == 0 && isPlaying {
 				break
 			}
@@ -152,11 +151,9 @@ func (m *MusicPlayer) run() (err error) {
 				continue
 			}
 			if isPlaying {
-				fmt.Println("got here")
 				streamSes = m.nextSong(vc, done)
 			} else {
 				streamSes.SetPaused(true)
-				fmt.Println("and here")
 			}
 		case pstate := <-m.channels.setPause:
 			if pstate {
@@ -175,7 +172,6 @@ func (m *MusicPlayer) run() (err error) {
 			vc, err = m.dcData.session.ChannelVoiceJoin(guildID, channelID, false, true)
 			vc.Speaking(true)
 		case <-done:
-			fmt.Println("here done")
 			if len(m.queue) == 0 {
 				isPlaying = false
 				vc.Speaking(false)
