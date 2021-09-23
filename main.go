@@ -1,4 +1,4 @@
-// Dependencies: ffmpeg and youtube-dl have to be in $PATH
+// Dependencies: youtube-dl has to be in $PATH
 
 package main
 
@@ -33,15 +33,8 @@ func dlSong(url string) io.Reader {
 	// Setup youtube-dl
 	ytdlName := "youtube-dl"
 	ytdl := exec.Command(ytdlName, url, "-o", "-")
-	// Setup ffmpeg
-	ffmpegName := "ffmpeg"
-	ffmpeg := exec.Command(ffmpegName, "-i", "-", "-f", "mp3", "-")
-
-	ffmpeg.Stdin, _ = ytdl.StdoutPipe()
-	r, _ := ffmpeg.StdoutPipe()
-
+	r, _ := ytdl.StdoutPipe()
 	ytdl.Start()
-	ffmpeg.Start()
 	return r
 }
 
