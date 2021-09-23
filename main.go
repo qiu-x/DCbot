@@ -20,6 +20,27 @@ import (
 
 const PREFIX = "PiS"
 
+const HELP = "```" + `shell
+Flags:
+
+--list, -l
+	Print current track queue
+
+--skip, -s
+	Skip current track
+
+--pause, -p
+	Pause current track
+
+--resmue, r
+	Rersume current track
+
+--help, -h
+	Print this message
+
+--restart
+	Restart the bot
+` + "```"
 var Token string
 var isPlaying bool = false
 
@@ -216,6 +237,8 @@ func handleArgs(vs *discordgo.VoiceState, g *discordgo.Guild,
 		case "--resume", "-r":
 			s.ChannelMessageSend(m.ChannelID, "Resuming playback")
 			mp.setPause(false)
+		case "--help", "-h":
+			s.ChannelMessageSend(m.ChannelID, HELP)
 		case "--restart":
 			// Yeah I know this is pretty stupid...
 			main()
