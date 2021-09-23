@@ -195,10 +195,14 @@ func handleArgs(vs *discordgo.VoiceState, g *discordgo.Guild,
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--play", "-p":
-			mp.connect(s, g.ID, vs.ChannelID)
 			i++
-			mp.push(args[i])
-			s.ChannelMessageSend(m.ChannelID, "Track added to queue")
+			if len(args)-1 >= i {
+				mp.connect(s, g.ID, vs.ChannelID)
+				mp.push(args[i])
+				s.ChannelMessageSend(m.ChannelID, "Track added to queue")
+			} else {
+				s.ChannelMessageSend(m.ChannelID, "An syntax error has occured")
+			}
 		case "--list", "-l":
 			queue := mp.getQueue()
 			msg := "Current queue:\n" + strings.Join(queue, "\n")
