@@ -204,6 +204,7 @@ func handleArgs(vs *discordgo.VoiceState, g *discordgo.Guild,
 			msg := "Current queue:\n" + strings.Join(queue, "\n")
 			s.ChannelMessageSend(m.ChannelID, msg)
 		case "--skip", "-s":
+			s.ChannelMessageSend(m.ChannelID, "Skipping current track...")
 			mp.skip()
 		case "--pause", "-z":
 			s.ChannelMessageSend(m.ChannelID, "Pausing playback")
