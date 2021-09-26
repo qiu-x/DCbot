@@ -221,6 +221,11 @@ func (m *MusicPlayer) run() (err error) {
 					streamSes = dca.NewStream(encSes, vc, done)
 					m.dcData.session.ChannelMessageSend(m.dcData.mChannelID, "Channel switched")
 				}
+			} else if finished, _ := streamSes.Finished(); encSes != nil && finished {
+				vc, err = m.dcData.session.ChannelVoiceJoin(guildID, channelID, false, true)
+				if err != nil {
+					m.dcData.session.ChannelMessageSend(m.dcData.mChannelID, "Cannot join channel: " + err.Error())
+				}
 			}
 		case <-done:
 			if len(m.queue) == 0 {
