@@ -37,6 +37,12 @@ Flags:
 --resmue, -r
 	Rersume current track
 
+--loop
+	Loop current track
+
+--unloop
+	Unloop current track
+
 --quit, -q
 	Disconnect bot
 
@@ -73,7 +79,7 @@ func getTrackName(url string) string {
 
 func dlTrack(url string) io.Reader {
 	// Setup youtube-dl
-	ytdl := exec.Command(ytdlName, url, "-o", "-")
+	ytdl := exec.Command(ytdlName, url, "--yes-playlist", "-i", "-o", "-")
 	r, err := ytdl.StdoutPipe()
 
 	if err != nil {
@@ -96,6 +102,7 @@ type MusicPlayer struct {
 		queue  chan []Track
 		pause  chan bool
 		skip  chan bool
+		loop  chan bool
 		dcData chan DiscordData
 		quit   chan bool
 	}
@@ -108,6 +115,7 @@ func newMusicPlayer() *MusicPlayer {
 	m := new(MusicPlayer)
 	m.channels.queue = make(chan []Track)
 	m.channels.pause = make(chan bool)
+	m.channels.loop = make(chan bool)
 	m.channels.skip = make(chan bool)
 	m.channels.dcData = make(chan DiscordData)
 	m.channels.quit = make(chan bool)
@@ -115,18 +123,18 @@ func newMusicPlayer() *MusicPlayer {
 	return m
 }
 
-func (m *MusicPlayer) popQueue() (string, error) {
+func (m *MusicPlayer) getQueue() (string, error) {
 	if len(m.queue) == 0 {
 		return "", errors.New("Queue is empty")
 	}
 	url := m.queue[0].url
-	m.queue = m.queue[1:]
+	// m.queue = m.queue[1:]
 	return url, nil
 }
 
 func (m *MusicPlayer) nextTrack(vc *discordgo.VoiceConnection, done chan error) (
 	*dca.StreamingSession, *dca.EncodeSession, error) {
-	url, err := m.popQueue()
+	url, err := m.getQueue()
 	r := dlTrack(url)
 	if err != nil {
 		return nil, nil, err
@@ -150,6 +158,7 @@ func (m *MusicPlayer) connect(s *discordgo.Session, guildID, channelID, mChannel
 }
 
 func (m *MusicPlayer) run() (err error) {
+	loop := false
 	var guildID, channelID string
 	var vc *discordgo.VoiceConnection
 
@@ -177,6 +186,7 @@ func (m *MusicPlayer) run() (err error) {
 				}
 			}
 		case m.channels.queue <- m.queue:
+		case loop = <- m.channels.loop:
 		case pstate := <-m.channels.pause:
 			if pstate {
 				streamSes.SetPaused(true)
@@ -185,9 +195,12 @@ func (m *MusicPlayer) run() (err error) {
 			}
 		case <-m.channels.skip:
 			finished, _ := streamSes.Finished()
-			if len(m.queue) == 0 && (finished || streamSes == nil) {
+			if len(m.queue) == 1 || (finished || streamSes == nil) {
 				m.dcData.session.ChannelMessageSend(m.dcData.mChannelID, "Nothing to skip")
 			} else {
+				if !loop {
+					m.queue = m.queue[1:]
+				}
 				if encSes != nil {
 					streamSes.SetPaused(true)
 					encSes.Cleanup()
@@ -228,7 +241,7 @@ func (m *MusicPlayer) run() (err error) {
 				}
 			}
 		case <-done:
-			if len(m.queue) == 0 {
+			if len(m.queue) == 1 {
 				if encSes != nil {
 					encSes.Cleanup()
 				}
@@ -237,6 +250,9 @@ func (m *MusicPlayer) run() (err error) {
 			} else if !encSes.Running() {
 				if encSes != nil {
 					encSes.Cleanup()
+				}
+				if !loop {
+					m.queue = m.queue[1:]
 				}
 				streamSes, encSes, err = m.nextTrack(vc, done)
 				if err != nil {
@@ -285,6 +301,12 @@ func handleArgs(vs *discordgo.VoiceState, g *discordgo.Guild,
 				msg += "```" + numStr + ". " + v.name + "\n" + "```"
 			}
 			s.ChannelMessageSend(m.ChannelID, msg)
+		case "--loop":
+			mp.channels.loop <- true
+			s.ChannelMessageSend(m.ChannelID, "Looping current track...")
+		case "--unloop":
+			mp.channels.loop <- false
+			s.ChannelMessageSend(m.ChannelID, "Unlooping current track...")
 		case "--skip", "-s":
 			mp.channels.skip <- true
 			s.ChannelMessageSend(m.ChannelID, "Skipping current track...")
