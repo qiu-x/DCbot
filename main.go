@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -29,20 +31,25 @@ Flags:
 --skip, -s
 	Skip current track
 
---pause, -p
+--pause, -z
 	Pause current track
 
---resmue, r
+--resmue, -r
 	Rersume current track
+
+--quit, -q
+	Disconnect bot
+
+--come-here, -c
+	Connect to current channel
 
 --help, -h
 	Print this message
-
---restart
-	Restart the bot
 ` + "```"
+
+var ytdlName string = "youtube-dl"
+	
 var Token string
-var isPlaying bool = false
 
 func init() {
 	flag.StringVar(&Token, "t", "", "Bot Token")
@@ -50,30 +57,47 @@ func init() {
 	rand.Seed(time.Now().UnixNano())
 }
 
-func dlSong(url string) io.Reader {
+type Track struct {
+	url string
+	name string
+}
+
+func getTrackName(url string) string {
+	name, err := exec.Command(ytdlName, "-e", url).Output()
+	if err != nil {
+		fmt.Println(err)
+		return "Could not fetch track name"
+	}
+	return strings.TrimSpace(string(name))
+}
+
+func dlTrack(url string) io.Reader {
 	// Setup youtube-dl
-	ytdlName := "youtube-dl"
 	ytdl := exec.Command(ytdlName, url, "-o", "-")
-	r, _ := ytdl.StdoutPipe()
+	r, err := ytdl.StdoutPipe()
+
+	if err != nil {
+		fmt.Println(err)
+	}
 	ytdl.Start()
+	fmt.Println("Downloading: " + url)
 	return r
 }
 
 type DiscordData struct {
-	session   *discordgo.Session
-	guildID   string
-	channelID string
+	session    *discordgo.Session
+	guildID    string
+	channelID  string
+	mChannelID string
 }
 type MusicPlayer struct {
-	queue    []string
+	queue    []Track
 	channels struct {
-		add2queue  chan string
-		setState   chan bool
-		getState   chan bool
-		setPause   chan bool
-		getQueue   chan []string
-		dcDataChan chan DiscordData
-		quit       chan bool
+		queue  chan []Track
+		pause  chan bool
+		skip  chan bool
+		dcData chan DiscordData
+		quit   chan bool
 	}
 	dcData DiscordData
 }
@@ -82,126 +106,144 @@ var mp *MusicPlayer
 
 func newMusicPlayer() *MusicPlayer {
 	m := new(MusicPlayer)
-	m.channels.add2queue = make(chan string)
-	m.channels.setState = make(chan bool)
-	m.channels.getState = make(chan bool)
-	m.channels.getQueue = make(chan []string)
-	m.channels.setPause = make(chan bool)
-	m.channels.dcDataChan = make(chan DiscordData)
+	m.channels.queue = make(chan []Track)
+	m.channels.pause = make(chan bool)
+	m.channels.skip = make(chan bool)
+	m.channels.dcData = make(chan DiscordData)
 	m.channels.quit = make(chan bool)
 	go m.run()
 	return m
 }
 
-func (m *MusicPlayer) encodeNext() (*dca.EncodeSession, error) {
+func (m *MusicPlayer) popQueue() (string, error) {
 	if len(m.queue) == 0 {
-		return &dca.EncodeSession{}, nil
+		return "", errors.New("Queue is empty")
 	}
-	url := m.queue[0]
+	url := m.queue[0].url
 	m.queue = m.queue[1:]
-	r := dlSong(url)
-	encSes, err := dca.EncodeMem(r, dca.StdEncodeOptions)
-	return encSes, err
+	return url, nil
 }
 
-func (m *MusicPlayer) nextSong(vc *discordgo.VoiceConnection, done chan error) *dca.StreamingSession {
-	encSes, err := m.encodeNext()
+func (m *MusicPlayer) nextTrack(vc *discordgo.VoiceConnection, done chan error) (
+	*dca.StreamingSession, *dca.EncodeSession, error) {
+	url, err := m.popQueue()
+	r := dlTrack(url)
 	if err != nil {
-		fmt.Println(err)
+		return nil, nil, err
 	}
-	// TODO: fix leak
-	// defer encSes.Cleanup()
+	encSes, err := dca.EncodeMem(r, dca.StdEncodeOptions)
+	if err != nil {
+		return nil, nil, err
+	}
 	streamSes := dca.NewStream(encSes, vc, done)
-	return streamSes
+	return streamSes, encSes, nil
 }
 
-func (m *MusicPlayer) push(url string) {
-	m.channels.add2queue <- url
-	m.channels.setState <- true
-}
-
-func (m *MusicPlayer) setPause(state bool) {
-	m.channels.setPause <- state
-}
-
-func (m *MusicPlayer) skip() {
-	m.channels.setState <- false
-	m.channels.setState <- true
-}
-
-func (m *MusicPlayer) getQueue() []string {
-	queue := []string{}
-	m.channels.getQueue <- queue
-	queue = <-m.channels.getQueue
-	return queue
-}
-
-func (m *MusicPlayer) connect(s *discordgo.Session, guildID, channelID string) {
+func (m *MusicPlayer) connect(s *discordgo.Session, guildID, channelID, mChannelID string) {
 	data := DiscordData{
-		session:   s,
-		guildID:   guildID,
-		channelID: channelID,
+		session:    s,
+		guildID:    guildID,
+		channelID:  channelID,
+		mChannelID: mChannelID,
 	}
-	m.channels.dcDataChan <- data
+	m.channels.dcData <- data
 }
 
 func (m *MusicPlayer) run() (err error) {
-	if err != nil {
-		fmt.Println(err)
-	}
-
 	var guildID, channelID string
 	var vc *discordgo.VoiceConnection
 
-	oldIsPlaying := true
-	isPlaying := false
-
 	var streamSes *dca.StreamingSession
+	var encSes *dca.EncodeSession
 	done := make(chan error)
 	for {
 		select {
-		case item := <-m.channels.add2queue:
-			m.queue = append(m.queue, item)
-		case setState := <-m.channels.setState:
-			oldIsPlaying = isPlaying
-			isPlaying = setState
-			if len(m.queue) == 0 && isPlaying {
-				break
-			}
-			if oldIsPlaying == isPlaying {
+		case item := <-m.channels.queue:
+			m.queue = append(m.queue, item...)
+			if encSes == nil && streamSes == nil {
+				streamSes, encSes, err = m.nextTrack(vc, done)
+				if err != nil {
+					m.dcData.session.ChannelMessageSend(m.dcData.mChannelID, "Error: " + err.Error())
+					continue
+				}
 				continue
 			}
-			if isPlaying {
-				streamSes = m.nextSong(vc, done)
-			} else {
-				streamSes.SetPaused(true)
+			finished, _ := streamSes.Finished()
+			if encSes != nil && finished {
+				encSes.Cleanup()
+				streamSes, encSes, err = m.nextTrack(vc, done)
+				if err != nil {
+					m.dcData.session.ChannelMessageSend(m.dcData.mChannelID, "Error: " + err.Error())
+				}
 			}
-		case pstate := <-m.channels.setPause:
+		case m.channels.queue <- m.queue:
+		case pstate := <-m.channels.pause:
 			if pstate {
 				streamSes.SetPaused(true)
 			} else {
 				streamSes.SetPaused(false)
 			}
-		case <-m.channels.getState:
-			m.channels.getState <- isPlaying
-		case <-m.channels.getQueue:
-			m.channels.getQueue <- m.queue
-		case dcData := <-m.channels.dcDataChan:
+		case <-m.channels.skip:
+			finished, _ := streamSes.Finished()
+			if len(m.queue) == 0 && (finished || streamSes == nil) {
+				m.dcData.session.ChannelMessageSend(m.dcData.mChannelID, "Nothing to skip")
+			} else {
+				if encSes != nil {
+					streamSes.SetPaused(true)
+					encSes.Cleanup()
+				}
+				streamSes, encSes, err = m.nextTrack(vc, done)
+				if err != nil {
+					m.dcData.session.ChannelMessageSend(m.dcData.mChannelID, "Error: " + err.Error())
+				}
+			}
+		case dcData := <-m.channels.dcData:
 			m.dcData = dcData
 			guildID = m.dcData.guildID
+			oldID := channelID
 			channelID = m.dcData.channelID
-			vc, err = m.dcData.session.ChannelVoiceJoin(guildID, channelID, false, true)
-			vc.Speaking(true)
+			if vc == nil {
+				vc, err = m.dcData.session.ChannelVoiceJoin(guildID, channelID, false, true)
+				if err != nil {
+					m.dcData.session.ChannelMessageSend(m.dcData.mChannelID, "Cannot join channel: " + err.Error())
+				}
+			} else if oldID != channelID {
+				vc.Disconnect()
+				vc, err = m.dcData.session.ChannelVoiceJoin(guildID, channelID, false, true)
+				if err != nil {
+					m.dcData.session.ChannelMessageSend(m.dcData.mChannelID, "Cannot join channel: " + err.Error())
+				}
+				vc.Speaking(true)
+				if encSes == nil {
+					continue
+				}
+				if encSes.Running() {
+					streamSes = dca.NewStream(encSes, vc, done)
+					m.dcData.session.ChannelMessageSend(m.dcData.mChannelID, "Channel switched")
+				}
+			}
 		case <-done:
 			if len(m.queue) == 0 {
-				isPlaying = false
+				if encSes != nil {
+					encSes.Cleanup()
+				}
 				vc.Speaking(false)
-				time.Sleep(250 * time.Millisecond)
 				vc.Disconnect()
-				break
-			} else {
-				streamSes = m.nextSong(vc, done)
+			} else if !encSes.Running() {
+				if encSes != nil {
+					encSes.Cleanup()
+				}
+				streamSes, encSes, err = m.nextTrack(vc, done)
+				if err != nil {
+					m.dcData.session.ChannelMessageSend(m.dcData.mChannelID, "Error: " + err.Error())
+				}
 			}
+		case <-m.channels.quit:
+			if encSes != nil {
+				encSes.Cleanup()
+			}
+			vc.Speaking(false)
+			vc.Disconnect()
 		}
 	}
 
@@ -218,30 +260,41 @@ func handleArgs(vs *discordgo.VoiceState, g *discordgo.Guild,
 		case "--play", "-p":
 			i++
 			if len(args)-1 >= i {
-				mp.connect(s, g.ID, vs.ChannelID)
-				mp.push(args[i])
+				mp.connect(s, g.ID, vs.ChannelID, m.ChannelID)
+				item := Track{url: args[i], name: ""}
+				item.name = getTrackName(args[i])
+				mp.channels.queue <- []Track{item}
 				s.ChannelMessageSend(m.ChannelID, "Track added to queue")
 			} else {
 				s.ChannelMessageSend(m.ChannelID, "An syntax error has occured")
 			}
 		case "--list", "-l":
-			queue := mp.getQueue()
-			msg := "Current queue:\n" + strings.Join(queue, "\n")
+			queue := <-mp.channels.queue
+			if len(queue) == 0 {
+				s.ChannelMessageSend(m.ChannelID, "Queue is empty")
+				break
+			}
+			msg := "Current queue:\n"
+			for i, v := range(queue) {
+				numStr := strconv.Itoa(i+1)
+				msg += "```" + numStr + ". " + v.name + "\n" + "```"
+			}
 			s.ChannelMessageSend(m.ChannelID, msg)
 		case "--skip", "-s":
+			mp.channels.skip <- true
 			s.ChannelMessageSend(m.ChannelID, "Skipping current track...")
-			mp.skip()
 		case "--pause", "-z":
+			mp.channels.pause <- true
 			s.ChannelMessageSend(m.ChannelID, "Pausing playback")
-			mp.setPause(true)
 		case "--resume", "-r":
+			mp.channels.pause <- false
 			s.ChannelMessageSend(m.ChannelID, "Resuming playback")
-			mp.setPause(false)
+		case "--quit", "-q":
+			mp.channels.quit <- true
+		case "--come-here", "-c":
+			mp.connect(s, g.ID, vs.ChannelID, m.ChannelID)
 		case "--help", "-h":
 			s.ChannelMessageSend(m.ChannelID, HELP)
-		case "--restart":
-			// Yeah I know this is pretty stupid...
-			main()
 		}
 	}
 }
