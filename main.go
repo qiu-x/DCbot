@@ -168,7 +168,11 @@ func (m *MusicPlayer) run() (err error) {
 	for {
 		select {
 		case item := <-m.channels.queue:
-			m.queue = append(m.queue, item...)
+			// Fetch track name
+			for _, v := range(item) {
+				v.name = getTrackName(v.url)
+				m.queue = append(m.queue, v)
+			}
 			if encSes == nil && streamSes == nil {
 				streamSes, encSes, err = m.nextTrack(vc, done)
 				if err != nil {
@@ -196,7 +200,11 @@ func (m *MusicPlayer) run() (err error) {
 		case <-m.channels.skip:
 			finished, _ := streamSes.Finished()
 			if len(m.queue) == 1 || (finished || streamSes == nil) {
-				m.dcData.session.ChannelMessageSend(m.dcData.mChannelID, "Nothing to skip")
+				if encSes != nil {
+					encSes.Cleanup()
+				}
+				vc.Speaking(false)
+				vc.Disconnect()
 			} else {
 				if !loop {
 					m.queue = m.queue[1:]
@@ -264,6 +272,7 @@ func (m *MusicPlayer) run() (err error) {
 				encSes.Cleanup()
 			}
 			vc.Speaking(false)
+			m.queue = []Track{}
 			vc.Disconnect()
 		}
 	}
@@ -283,7 +292,6 @@ func handleArgs(vs *discordgo.VoiceState, g *discordgo.Guild,
 			if len(args)-1 >= i {
 				mp.connect(s, g.ID, vs.ChannelID, m.ChannelID)
 				item := Track{url: args[i], name: ""}
-				item.name = getTrackName(args[i])
 				mp.channels.queue <- []Track{item}
 				s.ChannelMessageSend(m.ChannelID, "Track added to queue")
 			} else {
